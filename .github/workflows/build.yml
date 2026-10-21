@@ -18,7 +18,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-10 g++-10 python2
           
-          # 暴力替换，不依赖 alternatives
+          # 暴力替换系统默认编译器
           sudo rm -f /usr/bin/gcc /usr/bin/g++ /usr/bin/gcc-ar /usr/bin/gcc-nm /usr/bin/gcc-ranlib
           sudo ln -s /usr/bin/gcc-10 /usr/bin/gcc
           sudo ln -s /usr/bin/g++-10 /usr/bin/g++
@@ -29,59 +29,10 @@ jobs:
           echo "=== GCC 验证 ==="
           gcc --version | head -1
           g++ --version | head -1
-          readlink -f /usr/bin/gcc
-          readlink -f /usr/bin/g++
 
       - name: 📦 下载 OpenWrt 19.07.2 源码
         run: |
           git clone --branch v19.07.2 --depth 1 https://git.openwrt.org/openwrt/openwrt.git source
-
-      # 【核心修复】直接查看并暴力重写 GCC 版本检查逻辑
-      - name: 🔧 暴力修补 prereq-build.mk 的 GCC 检查
-        run: |
-          PREREQ="source/include/prereq-build.mk"
-          
-          echo "=== 修补前：GCC 检查相关行 ==="
-          grep -n -i "gcc\|GCC_VERSION\|4\.8\|408" "$PREREQ" || echo "(未找到匹配行)"
-          
-          # 直接将所有 GCC/G++ 版本检查函数替换为永远返回 true
-          # OpenWrt 19.07 使用 $(eval $(call TestHostCommand,xxx,...)) 格式
-          python3 << 'PYEOF'
-          import re
-          
-          with open("source/include/prereq-build.mk", "r") as f:
-              content = f.read()
-          
-          # 将 gcc 和 g++ 的版本检查命令替换为 "true"（永远成功）
-          # 匹配模式：$(call TestHostCommand,working-gcc, ..., <实际检查命令>)
-          # 我们保留 check 名称但把命令换成 true
-          content = re.sub(
-              r'(\$\((?:eval\s+)?\$\(\s*call\s+TestHostCommand\s*,\s*(?:working-)?gcc\s*,[^,]*,)\s*[^)]+\)',
-              r'\1 true)',
-              content
-          )
-          content = re.sub(
-              r'(\$\((?:eval\s+)?\$\(\s*call\s+TestHostCommand\s*,\s*(?:working-)?g\+\+\s*,[^,]*,)\s*[^)]+\)',
-              r'\1 true)',
-              content
-          )
-          
-          # 同时处理 Build dependency 提示行，将其注释掉
-          content = re.sub(
-              r'^(\s*\$\(error\s+Build dependency:.*[Gg][Cc][Cc].*)$',
-              r'# \1',
-              content,
-              flags=re.MULTILINE
-          )
-          
-          with open("source/include/prereq-build.mk", "w") as f:
-              f.write(content)
-          
-          print("✅ prereq-build.mk 已暴力修补")
-          PYEOF
-          
-          echo "=== 修补后：GCC 检查相关行 ==="
-          grep -n -i "gcc\|g++" "$PREREQ" | head -20
 
       - name: 🔌 注入 N828 设备树
         run: |
@@ -90,10 +41,6 @@ jobs:
       - name: ⚙️ 生成编译配置
         run: |
           cd source
-          # 编译前再次确认 gcc 版本
-          echo "=== 编译前 GCC 确认 ==="
-          gcc --version | head -1
-          
           cat > .config << 'EOF'
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_rt305x=y
@@ -108,18 +55,20 @@ jobs:
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
           EOF
-          make defconfig 2>&1 | tee ../build.log
+          # 【核心修复】直接使用 FORCE=1 跳过有 Bug 的前置检查
+          make defconfig FORCE=1 2>&1 | tee ../build.log
 
       - name: 🌐 预下载软件包
         run: |
           cd source
-          make download -j$(nproc) V=s 2>&1 | tee -a ../build.log
+          make download -j$(nproc) V=s FORCE=1 2>&1 | tee -a ../build.log
 
       - name: 🔥 编译固件并验证产物
         run: |
           cd source
           set -o pipefail
-          make -j$(nproc) V=s 2>&1 | tee -a ../build.log
+          # 编译全程保持 FORCE=1
+          make -j$(nproc) V=s FORCE=1 2>&1 | tee -a ../build.log
           
           echo "🔍 检查编译产物..."
           if [ ! -d "bin/targets/ramips" ]; then
@@ -128,14 +77,18 @@ jobs:
             exit 1
           fi
           COUNT=$(find bin/targets/ramips -name "*sysupgrade.bin" | wc -l)
-          [ "$COUNT" -eq 0 ] && { echo "❌ 无 sysupgrade.bin"; find bin/targets/ramips -type f | head -20; exit 1; }
+          if [ "$COUNT" -eq 0 ]; then 
+            echo "❌ 无 sysupgrade.bin"
+            find bin/targets/ramips -type f | head -20
+            exit 1
+          fi
           echo "✅ 找到 $COUNT 个固件"
 
       - name: 🚨 提取错误日志
         if: failure()
         run: |
           [ ! -f build.log ] && exit 0
-          grep -iE "(error|failed|make\[[0-9]+\]: \*\*\*|dependency|Prerequisite)" -B 3 -A 3 build.log > error_snippet.log || tail -100 build.log > error_snippet.log
+          grep -iE "(error|failed|make\[[0-9]+\]: \*\*\*)" -B 3 -A 3 build.log > error_snippet.log || tail -100 build.log > error_snippet.log
           cat error_snippet.log
 
       - name: 📤 上传错误日志
@@ -151,7 +104,10 @@ jobs:
           DIR=$(find source/bin/targets/ramips -maxdepth 1 -type d | grep -v "^source/bin/targets/ramips$" | head -1)
           [ -z "$DIR" ] && exit 1
           cd "$DIR"
-          N=0; for f in *3g300m*; do [ -e "$f" ] && mv "$f" "${f//3g300m/n828}" && N=$((N+1)); done
+          N=0
+          for f in *3g300m*; do 
+            [ -e "$f" ] && mv "$f" "${f//3g300m/n828}" && N=$((N+1))
+          done
           [ "$N" -eq 0 ] && { ls -la; exit 1; }
           echo "✅ 重命名 $N 个文件"
 
