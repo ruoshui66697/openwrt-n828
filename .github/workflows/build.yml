@@ -1,4 +1,4 @@
-name: Build OpenWrt for N828
+name: Build OpenWrt for N828 (3G300M Shell)
 
 on:
   push:
@@ -17,32 +17,21 @@ jobs:
         run: |
           git clone --branch v19.07.2 --depth 1 https://git.openwrt.org/openwrt/openwrt.git source
           
-      - name: Inject Custom DTS
+      - name: Inject N828 DTS into 3G300M Shell
         run: |
-          # 复制 DTS 文件到源码树
-          cp dts/rt3052_n828.dts source/target/linux/ramips/dts/
+          # 核心操作：用 N828 的 DTS 覆盖 3G300M 的 DTS
+          # 这样既保留了 3G300M 的完整板级支持，又使用了 N828 的硬件描述
+          cp dts/rt3052_n828.dts source/target/linux/ramips/dts/3G300M.dts
           
-          # 在 rt305x.mk 中追加 N828 设备定义
-          cat >> source/target/linux/ramips/image/rt305x.mk << 'EOF'
-          
-          define Device/n828
-            SOC := rt3052
-            DEVICE_TITLE := N828 CPE
-            IMAGE_SIZE := 3776k
-            KERNEL := kernel-bin | append-dtb | lzma -d16
-            IMAGES := sysupgrade.bin
-            IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE)
-          endef
-          TARGET_DEVICES += n828
-          EOF
+          echo "✅ DTS injection complete. 3G300M shell now uses N828 hardware definition."
 
-      - name: Generate Minimal .config
+      - name: Generate .config Based on 3G300M
         run: |
           cd source
           cat > .config << 'EOF'
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_rt305x=y
-          CONFIG_TARGET_ramips_rt305x_DEVICE_n828=y
+          CONFIG_TARGET_ramips_rt305x_DEVICE_3g300m=y
           CONFIG_PACKAGE_kmod-usb-ohci=y
           CONFIG_PACKAGE_kmod-usb2=y
           CONFIG_PACKAGE_kmod-usb-serial=y
@@ -50,8 +39,6 @@ jobs:
           CONFIG_PACKAGE_comgt=y
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-proto-3g=y
-          # 禁用不必要的包以节省空间
-          # CONFIG_PACKAGE_ppp is required for 3G, do NOT disable
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
           EOF
@@ -67,8 +54,17 @@ jobs:
           cd source
           make -j$(nproc) V=s
 
+      - name: Rename Output to N828
+        run: |
+          cd source/bin/targets/ramips/rt305x
+          # 将所有包含 3g300m 的文件名替换为 n828
+          for f in *3g300m*; do
+            mv "$f" "${f//3g300m/n828}"
+          done
+          echo "✅ Firmware renamed from 3g300m to n828"
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-n828-firmware
-          path: source/bin/targets/ramips/rt305x/*sysupgrade.bin
+          path: source/bin/targets/ramips/rt305x/*n828*sysupgrade.bin
