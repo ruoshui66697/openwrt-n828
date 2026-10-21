@@ -13,16 +13,22 @@ jobs:
       - name: Checkout Config Repo
         uses: actions/checkout@v4
 
+      # 【Hotfix 1】安装 Python 2 和必要的兼容依赖
+      - name: Install Legacy Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python2 gcc-10 g++-10
+          # 创建 python -> python2 软链接，骗过 OpenWrt 旧版检测脚本
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
+          echo "✅ Legacy dependencies installed and symlinked."
+
       - name: Clone OpenWrt 19.07.2 Source
         run: |
           git clone --branch v19.07.2 --depth 1 https://git.openwrt.org/openwrt/openwrt.git source
           
       - name: Inject N828 DTS into 3G300M Shell
         run: |
-          # 核心操作：用 N828 的 DTS 覆盖 3G300M 的 DTS
-          # 这样既保留了 3G300M 的完整板级支持，又使用了 N828 的硬件描述
           cp dts/rt3052_n828.dts source/target/linux/ramips/dts/3G300M.dts
-          
           echo "✅ DTS injection complete. 3G300M shell now uses N828 hardware definition."
 
       - name: Generate .config Based on 3G300M
@@ -49,15 +55,15 @@ jobs:
           cd source
           make download -j$(nproc) V=s
 
+      # 【Hotfix 2】使用 FORCE=1 跳过过时的 prereq 检查
       - name: Compile Firmware
         run: |
           cd source
-          make -j$(nproc) V=s
+          make -j$(nproc) V=s FORCE=1
 
       - name: Rename Output to N828
         run: |
           cd source/bin/targets/ramips/rt305x
-          # 将所有包含 3g300m 的文件名替换为 n828
           for f in *3g300m*; do
             mv "$f" "${f//3g300m/n828}"
           done
