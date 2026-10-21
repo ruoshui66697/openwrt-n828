@@ -33,7 +33,9 @@ jobs:
           cp dts/rt3052_n828.dts source/target/linux/ramips/dts/3G300M.dts
           echo "✅ 设备树注入成功"
 
+      # 【关键修复】defconfig 也需要 FORCE=1，且开始记录日志
       - name: ⚙️ 第五步：生成基于3G300M的编译配置
+        id: defconfig
         run: |
           echo "👉 正在写入 .config 并解析依赖..."
           cd source
@@ -51,42 +53,40 @@ jobs:
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
           EOF
-          make defconfig
+          make defconfig FORCE=1 2>&1 | tee ../build.log
           echo "✅ 编译配置生成完毕"
 
       - name: 🌐 第六步：预下载所有软件包源码
         run: |
           echo "👉 正在并发下载所需软件包..."
           cd source
-          make download -j$(nproc) V=s
+          make download FORCE=1 -j$(nproc) V=s 2>&1 | tee -a ../build.log
           echo "✅ 软件包下载完成"
 
-      # 【关键修复】确保 FORCE=1 作为 Make 变量正确传递
       - name: 🔥 第七步：强制跳过过时检查并开始编译固件
         id: compile
         run: |
           echo "👉 使用 FORCE=1 跳过旧版检测，正式开始编译..."
-          echo "⚠️ 编译日志已保存至 build.log，失败时将自动提取错误片段"
+          echo "⚠️ 编译日志已追加至 build.log，失败时将自动提取错误片段"
           cd source
-          # 注意：FORCE=1 必须紧跟在 make 后面，且不能被管道吞掉
-          make FORCE=1 -j$(nproc) V=s 2>&1 | tee ../build.log
+          make FORCE=1 -j$(nproc) V=s 2>&1 | tee -a ../build.log
           echo "✅ 固件编译完成"
 
-      # 【优化】无论哪一步失败都尝试提取日志
+      # 【优化】现在无论哪一步失败都能找到 build.log
       - name: 🚨 第八步(仅失败时触发)：提取并上传关键错误日志
         if: failure()
         run: |
           echo "❌ 构建失败！正在提取关键错误信息..."
-          LOG_FILE="../build.log"
+          LOG_FILE="build.log"
           
-          # 如果 build.log 不存在（说明在编译前就失败了），尝试找其他日志
           if [ ! -f "$LOG_FILE" ]; then
-            echo "⚠️ build.log 未找到，可能在前置步骤失败"
+            echo "⚠️ build.log 未找到，说明在第五步之前就失败了"
+            echo "请检查上方 GitHub Actions 界面中具体哪个步骤标红"
             exit 0
           fi
           
-          # 提取错误上下文
-          grep -iE "(error|failed|make\[[0-9]+\]: \*\*\*|Build dependency)" -B 5 -A 5 "$LOG_FILE" > error_snippet.log || true
+          # 提取错误上下文（包含前置检查失败的提示）
+          grep -iE "(error|failed|make\[[0-9]+\]: \*\*\*|Build dependency|Prerequisite check)" -B 5 -A 5 "$LOG_FILE" > error_snippet.log || true
           
           # 兜底：最后100行
           if [ ! -s error_snippet.log ]; then
