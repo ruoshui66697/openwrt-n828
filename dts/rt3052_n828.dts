@@ -1,6 +1,6 @@
 /dts-v1/;
 
-#include "rt3052.dtsi"
+#include "rt3050.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 
