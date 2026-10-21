@@ -1,1 +1,106 @@
+/dts-v1/;
 
+#include "rt3052.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/ {
+	compatible = "n828", "ralink,rt3052-soc";
+	model = "N828 CPE";
+
+	aliases {
+		led-boot = &led_system;
+		led-failsafe = &led_system;
+		led-running = &led_system;
+		led-upgrade = &led_system;
+	};
+
+	keys {
+		compatible = "gpio-keys-polled";
+		poll-interval = <20>;
+
+		reset {
+			label = "reset";
+			gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_RESTART>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_system: system {
+			label = "n828:green:system";
+			gpios = <&gpio0 13 GPIO_ACTIVE_LOW>; /* 占位符，待刷机后实测确认 */
+		};
+
+		signal_1 {
+			label = "n828:green:signal1";
+			gpios = <&gpio0 17 GPIO_ACTIVE_LOW>; /* 实测确认：信号灯1 */
+		};
+
+		signal_2 {
+			label = "n828:green:signal2";
+			gpios = <&gpio0 18 GPIO_ACTIVE_LOW>; /* 实测确认：信号灯2 */
+		};
+
+		/* 注意：实测数据中的信号灯3 (GPIO 21) 超出 RT3052F 标准 GPIO 范围，
+		   为确保首次编译和启动安全，此处暂不添加。待进入系统后通过 sysfs 实测确认。 */
+	};
+};
+
+&spi0 {
+	status = "okay";
+
+	m25p80@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "u-boot";
+				reg = <0x0 0x30000>;
+				read-only;
+			};
+
+			partition@30000 {
+				label = "u-boot-env";
+				reg = <0x30000 0x10000>;
+				read-only;
+			};
+
+			factory: partition@40000 {
+				label = "factory";
+				reg = <0x40000 0x10000>;
+				read-only;
+			};
+
+			partition@50000 {
+				compatible = "denx,uimage";
+				label = "firmware";
+				/* 4MB Flash (0x400000) - 0x50000 (前面分区总和) = 0x3b0000 */
+				reg = <0x50000 0x3b0000>;
+			};
+		};
+	};
+};
+
+&ethernet {
+	mtd-mac-address = <&factory 0x4>;
+};
+
+&esw {
+	/* 0x2f 代表启用所有 5 个端口 (1 WAN + 4 LAN)。
+	   虽然物理上可能只有 2 个网口 (PHY0/PHY1)，但底层交换机映射保持全开最安全，
+	   具体的 WAN/LAN 划分将在后续的网络配置文件 (/etc/config/network) 中进行。 */
+	mediatek,portmap = <0x2f>;
+};
+
+&wmac {
+	ralink,mtd-eeprom = <&factory 0x0>;
+};
