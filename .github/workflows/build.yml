@@ -1,1 +1,74 @@
+name: Build OpenWrt for N828
 
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout Config Repo
+        uses: actions/checkout@v4
+
+      - name: Clone OpenWrt 19.07.2 Source
+        run: |
+          git clone --branch v19.07.2 --depth 1 https://git.openwrt.org/openwrt/openwrt.git source
+          
+      - name: Inject Custom DTS
+        run: |
+          # 复制 DTS 文件到源码树
+          cp dts/rt3052_n828.dts source/target/linux/ramips/dts/
+          
+          # 在 rt305x.mk 中追加 N828 设备定义
+          cat >> source/target/linux/ramips/image/rt305x.mk << 'EOF'
+          
+          define Device/n828
+            SOC := rt3052
+            DEVICE_TITLE := N828 CPE
+            IMAGE_SIZE := 3776k
+            KERNEL := kernel-bin | append-dtb | lzma -d16
+            IMAGES := sysupgrade.bin
+            IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE)
+          endef
+          TARGET_DEVICES += n828
+          EOF
+
+      - name: Generate Minimal .config
+        run: |
+          cd source
+          cat > .config << 'EOF'
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_rt305x=y
+          CONFIG_TARGET_ramips_rt305x_DEVICE_n828=y
+          CONFIG_PACKAGE_kmod-usb-ohci=y
+          CONFIG_PACKAGE_kmod-usb2=y
+          CONFIG_PACKAGE_kmod-usb-serial=y
+          CONFIG_PACKAGE_kmod-usb-serial-option=y
+          CONFIG_PACKAGE_comgt=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-proto-3g=y
+          # 禁用不必要的包以节省空间
+          # CONFIG_PACKAGE_ppp is required for 3G, do NOT disable
+          CONFIG_STRIP_KERNEL_EXPORTS=y
+          CONFIG_USE_MKLIBS=y
+          EOF
+          make defconfig
+
+      - name: Download Packages
+        run: |
+          cd source
+          make download -j$(nproc) V=s
+
+      - name: Compile Firmware
+        run: |
+          cd source
+          make -j$(nproc) V=s
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-n828-firmware
+          path: source/bin/targets/ramips/rt305x/*sysupgrade.bin
