@@ -10,12 +10,14 @@ jobs:
       image: ubuntu:20.04
       env:
         DEBIAN_FRONTEND: noninteractive
+        # 【关键修复】允许 tar/autoconf 等工具以 root 身份编译
+        FORCE_UNSAFE_CONFIGURE: "1"
 
     steps:
       - name: 📥 拉取配置仓库代码
         uses: actions/checkout@v4
 
-      - name: 🛠️ 安装编译依赖 (含 curl)
+      - name: 🛠️ 安装编译依赖
         shell: bash
         run: |
           apt-get update
@@ -26,7 +28,7 @@ jobs:
           
           echo "=== 环境验证 ==="
           gcc --version | head -1
-          curl --version | head -1
+          echo "FORCE_UNSAFE_CONFIGURE=$FORCE_UNSAFE_CONFIGURE"
 
       - name: 📦 下载 OpenWrt 19.07.2 源码
         shell: bash
@@ -55,20 +57,20 @@ jobs:
           CONFIG_PACKAGE_luci-proto-3g=y
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
-          # 禁用 N828 不需要的 Broadcom WiFi 固件，避免下载超时
+          # 禁用 N828 (RT3052) 不需要的固件，避免下载失败
           # CONFIG_PACKAGE_b43-firmware is not set
+          # CONFIG_PACKAGE_zd1211-firmware is not set
           EOF
           make defconfig 2>&1 | tee ../build.log
 
-      - name: 🌐 预下载软件包 (注入存档镜像源)
+      - name: 🌐 预下载软件包 (仅使用可靠源)
         shell: bash
         run: |
           cd source
-          # 将已失效的上游源替换为 OpenWrt 官方存档镜像
-          sed -i 's|https://downloads.sourceforge.net|https://sourceforge.mirrorservice.org|g' scripts/download.pl
+          # 不再替换为 sourceforge.mirrorservice.org（DNS 不可达）
+          # 仅将已知失效的 HTTP 源升级为 HTTPS，保留 sources.openwrt.org 作为兜底
           sed -i 's|http://ftp.de.debian.org|https://deb.debian.org|g' scripts/download.pl
-          sed -i 's|http://ftp.acc.umu.se|https://ftp.gnome.org|g' scripts/download.pl
-          sed -i 's|http://www.lwfinger.com|https://sources.openwrt.org|g' scripts/download.pl
+          sed -i 's|http://www.zlib.net|https://zlib.net|g' scripts/download.pl
           
           make download -j$(nproc) V=s 2>&1 | tee -a ../build.log
 
