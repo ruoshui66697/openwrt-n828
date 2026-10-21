@@ -1,26 +1,30 @@
 name: 构建 N828 固件 (3G300M套壳版)
 
-# 【关键修复】仅保留手动触发，彻底移除 push/PR 自动触发
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    # 【关键修复】使用 Ubuntu 20.04，原生兼容 OpenWrt 19.07.2
-    runs-on: ubuntu-20.04
-    
+    # 换回 ubuntu-22.04，秒级分配，不再排队
+    runs-on: ubuntu-22.04
+    container:
+      # 使用 Ubuntu 20.04 容器，内部自带原生 GCC9，完美兼容 OpenWrt 19.07
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+
     steps:
       - name: 📥 拉取配置仓库代码
         uses: actions/checkout@v4
 
-      - name: 🛠️ 安装基础编译依赖
+      - name: 🛠️ 安装编译依赖 (容器内)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y \
             build-essential libncurses5-dev zlib1g-dev gawk git gettext \
-            libssl-dev xsltproc rsync wget unzip python2 python3
+            libssl-dev xsltproc rsync wget unzip python2 python3 file
           
-          echo "=== 环境验证 ==="
+          echo "=== 容器内环境验证 ==="
           gcc --version | head -1
           g++ --version | head -1
 
@@ -49,7 +53,6 @@ jobs:
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
           EOF
-          # 原生环境，无需 FORCE=1，无需任何补丁
           make defconfig 2>&1 | tee ../build.log
 
       - name: 🌐 预下载软件包
