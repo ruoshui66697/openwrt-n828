@@ -13,30 +13,28 @@ jobs:
       - name: 📥 第一步：拉取配置仓库代码
         uses: actions/checkout@v4
 
-      - name: 🛠️ 第二步：安装旧版编译依赖(Python2/GCC10)
+      - name: 🛠️ 第二步：安装并激活 GCC10 作为默认编译器
         run: |
-          echo "👉 正在安装 Python2 和 GCC10 以兼容 OpenWrt 19.07..."
+          echo "👉 正在安装 GCC10/G++10 并设为系统默认..."
           sudo apt-get update
-          sudo apt-get install -y python2 gcc-10 g++-10
-          sudo ln -sf /usr/bin/python2 /usr/bin/python
-          echo "✅ 旧版依赖安装完成"
+          sudo apt-get install -y gcc-10 g++-10 python2
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-10 100
+          sudo update-alternatives --set gcc /usr/bin/gcc-10
+          sudo update-alternatives --set g++ /usr/bin/g++-10
+          echo "当前 GCC: $(gcc --version | head -n1)"
+          echo "✅ GCC10 已激活"
 
       - name: 📦 第三步：下载 OpenWrt 19.07.2 源码
         run: |
-          echo "👉 正在克隆 OpenWrt v19.07.2 官方源码..."
           git clone --branch v19.07.2 --depth 1 https://git.openwrt.org/openwrt/openwrt.git source
-          echo "✅ 源码下载完成"
-          
+
       - name: 🔌 第四步：将N828设备树注入3G300M外壳
         run: |
-          echo "👉 正在用 N828 DTS 覆盖 3G300M 原始 DTS..."
           cp dts/rt3052_n828.dts source/target/linux/ramips/dts/3G300M.dts
-          echo "✅ 设备树注入成功"
 
-      - name: ⚙️ 第五步：生成基于3G300M的编译配置
-        id: defconfig
+      - name: ⚙️ 第五步：生成编译配置
         run: |
-          echo "👉 正在写入 .config 并解析依赖..."
           cd source
           cat > .config << 'EOF'
           CONFIG_TARGET_ramips=y
@@ -52,82 +50,81 @@ jobs:
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
           EOF
-          make defconfig FORCE=1 2>&1 | tee ../build.log
-          echo "✅ 编译配置生成完毕"
+          make defconfig 2>&1 | tee ../build.log
 
-      - name: 🌐 第六步：预下载所有软件包源码
+      - name: 🌐 第六步：预下载软件包
         run: |
-          echo "👉 正在并发下载所需软件包..."
           cd source
-          make download FORCE=1 -j$(nproc) V=s 2>&1 | tee -a ../build.log
-          echo "✅ 软件包下载完成"
+          make download -j$(nproc) V=s 2>&1 | tee -a ../build.log
 
-      - name: 🔥 第七步：强制跳过过时检查并开始编译固件
+      # 【关键修复】使用 pipefail + 显式检查产物，杜绝假成功
+      - name: 🔥 第七步：编译固件并验证产物
         id: compile
         run: |
-          echo "👉 使用 FORCE=1 跳过旧版检测，正式开始编译..."
           cd source
-          make FORCE=1 -j$(nproc) V=s 2>&1 | tee -a ../build.log
-          echo "✅ 固件编译完成"
+          set -o pipefail
+          make -j$(nproc) V=s 2>&1 | tee -a ../build.log
+          
+          # 编译后立即验证产物是否存在
+          echo "🔍 检查编译产物..."
+          if [ ! -d "bin/targets/ramips" ]; then
+            echo "❌ 编译未生成 ramips 目标目录！"
+            echo "📂 bin/targets 实际内容："
+            ls -laR bin/targets/ 2>/dev/null || echo "(bin/targets 不存在)"
+            exit 1
+          fi
+          
+          FIRMWARE_COUNT=$(find bin/targets/ramips -name "*sysupgrade.bin" 2>/dev/null | wc -l)
+          if [ "$FIRMWARE_COUNT" -eq 0 ]; then
+            echo "❌ 未找到任何 sysupgrade.bin 固件！"
+            echo "📂 ramips 目录下所有文件："
+            find bin/targets/ramips -type f | head -20
+            exit 1
+          fi
+          echo "✅ 找到 $FIRMWARE_COUNT 个固件文件"
 
-      - name: 🚨 第八步(仅失败时触发)：提取并上传关键错误日志
+      - name: 🚨 第八步(仅失败时触发)：提取关键错误日志
         if: failure()
         run: |
-          echo "❌ 构建失败！正在提取关键错误信息..."
           LOG_FILE="build.log"
           if [ ! -f "$LOG_FILE" ]; then
-            echo "⚠️ build.log 未找到，说明在第五步之前就失败了"
+            echo "⚠️ build.log 未找到"
             exit 0
           fi
           grep -iE "(error|failed|make\[[0-9]+\]: \*\*\*|Build dependency|Prerequisite check)" -B 5 -A 5 "$LOG_FILE" > error_snippet.log || true
           if [ ! -s error_snippet.log ]; then
             tail -n 100 "$LOG_FILE" > error_snippet.log
           fi
-          echo "===== 错误摘要预览 ====="
+          echo "===== 错误摘要 ====="
           cat error_snippet.log
-          echo "========================"
+          echo "===================="
 
-      - name: 📤 第九步(仅失败时触发)：上传错误日志片段
+      - name: 📤 第九步(仅失败时触发)：上传错误日志
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: ❌ 编译错误日志片段
           path: error_snippet.log
 
-      # 【关键修复】自动查找固件输出目录，不再硬编码路径
-      - name: 🏷️ 第十步：将产物从3G300M重命名为N828
+      - name: 🏷️ 第十步：重命名固件
         if: success()
         run: |
-          echo "👉 正在查找固件输出目录并重命名..."
           FIRMWARE_DIR=$(find source/bin/targets/ramips -maxdepth 1 -type d | grep -v "^source/bin/targets/ramips$" | head -n 1)
-          
           if [ -z "$FIRMWARE_DIR" ]; then
-            echo "❌ 未找到任何 ramips 固件输出目录！"
-            echo "📂 source/bin/targets/ramips 下的内容："
-            ls -la source/bin/targets/ramips/ || true
+            echo "❌ 未找到固件子目录"
             exit 1
           fi
-          
-          echo "✅ 找到输出目录: $FIRMWARE_DIR"
           cd "$FIRMWARE_DIR"
-          
           RENAMED=0
           for f in *3g300m*; do
             [ -e "$f" ] || continue
-            NEW_NAME="${f//3g300m/n828}"
-            mv "$f" "$NEW_NAME"
-            echo "🔄 $f → $NEW_NAME"
+            mv "$f" "${f//3g300m/n828}"
             RENAMED=$((RENAMED + 1))
           done
-          
-          if [ "$RENAMED" -eq 0 ]; then
-            echo "⚠️ 未找到包含 '3g300m' 的文件，列出当前目录所有文件："
-            ls -la
-            exit 1
-          fi
-          echo "✅ 共重命名 $RENAMED 个文件"
+          [ "$RENAMED" -eq 0 ] && { echo "⚠️ 未找到3g300m文件"; ls -la; exit 1; }
+          echo "✅ 重命名 $RENAMED 个文件"
 
-      - name: 📤 第十一步：上传N828固件到Artifacts
+      - name: 📤 第十一步：上传固件
         if: success()
         uses: actions/upload-artifact@v4
         with:
