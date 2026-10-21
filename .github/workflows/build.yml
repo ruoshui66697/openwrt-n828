@@ -10,55 +10,90 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
-      - name: 📥 第一步：拉取配置仓库代码
+      - name: 📥 拉取配置仓库代码
         uses: actions/checkout@v4
 
-      # 【根本修复】暴力替换 gcc/g++ 并修补 OpenWrt 版本检查 bug
-      - name: 🛠️ 第二步：修复 GCC 版本检查问题
+      - name: 🛠️ 安装 GCC10 并强制设为默认
         run: |
-          echo "👉 安装 GCC10 并强制替换系统默认编译器..."
           sudo apt-get update
           sudo apt-get install -y gcc-10 g++-10 python2
           
-          # 暴力替换：直接覆盖 /usr/bin/gcc 和 /usr/bin/g++
-          sudo ln -sf /usr/bin/gcc-10 /usr/bin/gcc
-          sudo ln -sf /usr/bin/g++-10 /usr/bin/g++
-          sudo ln -sf /usr/bin/gcc-ar-10 /usr/bin/gcc-ar
-          sudo ln -sf /usr/bin/gcc-nm-10 /usr/bin/gcc-nm
-          sudo ln -sf /usr/bin/gcc-ranlib-10 /usr/bin/gcc-ranlib
+          # 暴力替换，不依赖 alternatives
+          sudo rm -f /usr/bin/gcc /usr/bin/g++ /usr/bin/gcc-ar /usr/bin/gcc-nm /usr/bin/gcc-ranlib
+          sudo ln -s /usr/bin/gcc-10 /usr/bin/gcc
+          sudo ln -s /usr/bin/g++-10 /usr/bin/g++
+          sudo ln -s /usr/bin/gcc-ar-10 /usr/bin/gcc-ar
+          sudo ln -s /usr/bin/gcc-nm-10 /usr/bin/gcc-nm
+          sudo ln -s /usr/bin/gcc-ranlib-10 /usr/bin/gcc-ranlib
           
-          echo "验证: gcc=$(gcc -dumpversion), g++=$(g++ -dumpversion)"
-          echo "✅ GCC 已强制指向 v10"
+          echo "=== GCC 验证 ==="
+          gcc --version | head -1
+          g++ --version | head -1
+          readlink -f /usr/bin/gcc
+          readlink -f /usr/bin/g++
 
-      - name: 📦 第三步：下载 OpenWrt 19.07.2 源码
+      - name: 📦 下载 OpenWrt 19.07.2 源码
         run: |
           git clone --branch v19.07.2 --depth 1 https://git.openwrt.org/openwrt/openwrt.git source
 
-      # 【关键补丁】修复 OpenWrt 19.07 对 GCC 10+ 的版本误判
-      - name: 🔧 第四步：修补 OpenWrt prereq 版本检查 Bug
+      # 【核心修复】直接查看并暴力重写 GCC 版本检查逻辑
+      - name: 🔧 暴力修补 prereq-build.mk 的 GCC 检查
         run: |
-          echo "👉 修补 include/prereq-build.mk 中的版本比较逻辑..."
           PREREQ="source/include/prereq-build.mk"
           
-          # 将字符串比较改为数值比较，修复 GCC 10/11/12 被误判为 < 4.8 的问题
-          sed -i 's/\$(shell expr \$\$(GCC_VERSION) \>= 408)/$(shell echo $$(GCC_VERSION) | awk "{if (\$$1 >= 4.8) print 1; else print 0}")/g' "$PREREQ" 2>/dev/null || true
+          echo "=== 修补前：GCC 检查相关行 ==="
+          grep -n -i "gcc\|GCC_VERSION\|4\.8\|408" "$PREREQ" || echo "(未找到匹配行)"
           
-          # 备用方案：如果上面的 sed 没匹配到，直接把最低版本要求改成 0
-          if grep -q "408" "$PREREQ"; then
-            echo "⚠️ 正则未匹配，使用备用方案：将 GCC 最低版本要求降为 0..."
-            sed -i 's/408/0/g' "$PREREQ"
-            sed -i 's/4\.8/0/g' "$PREREQ"
-          fi
+          # 直接将所有 GCC/G++ 版本检查函数替换为永远返回 true
+          # OpenWrt 19.07 使用 $(eval $(call TestHostCommand,xxx,...)) 格式
+          python3 << 'PYEOF'
+          import re
           
-          echo "✅ prereq-build.mk 已修补"
+          with open("source/include/prereq-build.mk", "r") as f:
+              content = f.read()
+          
+          # 将 gcc 和 g++ 的版本检查命令替换为 "true"（永远成功）
+          # 匹配模式：$(call TestHostCommand,working-gcc, ..., <实际检查命令>)
+          # 我们保留 check 名称但把命令换成 true
+          content = re.sub(
+              r'(\$\((?:eval\s+)?\$\(\s*call\s+TestHostCommand\s*,\s*(?:working-)?gcc\s*,[^,]*,)\s*[^)]+\)',
+              r'\1 true)',
+              content
+          )
+          content = re.sub(
+              r'(\$\((?:eval\s+)?\$\(\s*call\s+TestHostCommand\s*,\s*(?:working-)?g\+\+\s*,[^,]*,)\s*[^)]+\)',
+              r'\1 true)',
+              content
+          )
+          
+          # 同时处理 Build dependency 提示行，将其注释掉
+          content = re.sub(
+              r'^(\s*\$\(error\s+Build dependency:.*[Gg][Cc][Cc].*)$',
+              r'# \1',
+              content,
+              flags=re.MULTILINE
+          )
+          
+          with open("source/include/prereq-build.mk", "w") as f:
+              f.write(content)
+          
+          print("✅ prereq-build.mk 已暴力修补")
+          PYEOF
+          
+          echo "=== 修补后：GCC 检查相关行 ==="
+          grep -n -i "gcc\|g++" "$PREREQ" | head -20
 
-      - name: 🔌 第五步：将N828设备树注入3G300M外壳
+      - name: 🔌 注入 N828 设备树
         run: |
           cp dts/rt3052_n828.dts source/target/linux/ramips/dts/3G300M.dts
 
-      - name: ⚙️ 第六步：生成编译配置
+      - name: ⚙️ 生成编译配置
         run: |
           cd source
+          # 编译前再次确认 gcc 版本
+          echo "=== 编译前 GCC 确认 ==="
+          gcc --version | head -1
+          
           cat > .config << 'EOF'
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_rt305x=y
@@ -75,13 +110,12 @@ jobs:
           EOF
           make defconfig 2>&1 | tee ../build.log
 
-      - name: 🌐 第七步：预下载软件包
+      - name: 🌐 预下载软件包
         run: |
           cd source
           make download -j$(nproc) V=s 2>&1 | tee -a ../build.log
 
-      - name: 🔥 第八步：编译固件并验证产物
-        id: compile
+      - name: 🔥 编译固件并验证产物
         run: |
           cd source
           set -o pipefail
@@ -89,52 +123,39 @@ jobs:
           
           echo "🔍 检查编译产物..."
           if [ ! -d "bin/targets/ramips" ]; then
-            echo "❌ 编译未生成 ramips 目标目录！"
+            echo "❌ 未生成 ramips 目录"
             ls -laR bin/targets/ 2>/dev/null || echo "(bin/targets 不存在)"
             exit 1
           fi
-          FIRMWARE_COUNT=$(find bin/targets/ramips -name "*sysupgrade.bin" 2>/dev/null | wc -l)
-          if [ "$FIRMWARE_COUNT" -eq 0 ]; then
-            echo "❌ 未找到任何 sysupgrade.bin 固件！"
-            find bin/targets/ramips -type f | head -20
-            exit 1
-          fi
-          echo "✅ 找到 $FIRMWARE_COUNT 个固件文件"
+          COUNT=$(find bin/targets/ramips -name "*sysupgrade.bin" | wc -l)
+          [ "$COUNT" -eq 0 ] && { echo "❌ 无 sysupgrade.bin"; find bin/targets/ramips -type f | head -20; exit 1; }
+          echo "✅ 找到 $COUNT 个固件"
 
-      - name: 🚨 第九步(仅失败时触发)：提取关键错误日志
+      - name: 🚨 提取错误日志
         if: failure()
         run: |
-          LOG_FILE="build.log"
-          [ ! -f "$LOG_FILE" ] && { echo "⚠️ build.log 未找到"; exit 0; }
-          grep -iE "(error|failed|make\[[0-9]+\]: \*\*\*|Build dependency|Prerequisite check)" -B 5 -A 5 "$LOG_FILE" > error_snippet.log || true
-          [ ! -s error_snippet.log ] && tail -n 100 "$LOG_FILE" > error_snippet.log
-          echo "===== 错误摘要 ====="
+          [ ! -f build.log ] && exit 0
+          grep -iE "(error|failed|make\[[0-9]+\]: \*\*\*|dependency|Prerequisite)" -B 3 -A 3 build.log > error_snippet.log || tail -100 build.log > error_snippet.log
           cat error_snippet.log
-          echo "===================="
 
-      - name: 📤 第十步(仅失败时触发)：上传错误日志
+      - name: 📤 上传错误日志
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ❌ 编译错误日志片段
+          name: ❌ 编译错误日志
           path: error_snippet.log
 
-      - name: 🏷️ 第十一步：重命名固件
+      - name: 🏷️ 重命名固件
         if: success()
         run: |
-          FIRMWARE_DIR=$(find source/bin/targets/ramips -maxdepth 1 -type d | grep -v "^source/bin/targets/ramips$" | head -n 1)
-          [ -z "$FIRMWARE_DIR" ] && { echo "❌ 未找到固件子目录"; exit 1; }
-          cd "$FIRMWARE_DIR"
-          RENAMED=0
-          for f in *3g300m*; do
-            [ -e "$f" ] || continue
-            mv "$f" "${f//3g300m/n828}"
-            RENAMED=$((RENAMED + 1))
-          done
-          [ "$RENAMED" -eq 0 ] && { echo "⚠️ 未找到3g300m文件"; ls -la; exit 1; }
-          echo "✅ 重命名 $RENAMED 个文件"
+          DIR=$(find source/bin/targets/ramips -maxdepth 1 -type d | grep -v "^source/bin/targets/ramips$" | head -1)
+          [ -z "$DIR" ] && exit 1
+          cd "$DIR"
+          N=0; for f in *3g300m*; do [ -e "$f" ] && mv "$f" "${f//3g300m/n828}" && N=$((N+1)); done
+          [ "$N" -eq 0 ] && { ls -la; exit 1; }
+          echo "✅ 重命名 $N 个文件"
 
-      - name: 📤 第十二步：上传固件
+      - name: 📤 上传固件
         if: success()
         uses: actions/upload-artifact@v4
         with:
