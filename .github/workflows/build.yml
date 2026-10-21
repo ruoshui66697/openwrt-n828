@@ -5,10 +5,8 @@ on:
 
 jobs:
   build:
-    # 换回 ubuntu-22.04，秒级分配，不再排队
     runs-on: ubuntu-22.04
     container:
-      # 使用 Ubuntu 20.04 容器，内部自带原生 GCC9，完美兼容 OpenWrt 19.07
       image: ubuntu:20.04
       env:
         DEBIAN_FRONTEND: noninteractive
@@ -17,26 +15,31 @@ jobs:
       - name: 📥 拉取配置仓库代码
         uses: actions/checkout@v4
 
-      - name: 🛠️ 安装编译依赖 (容器内)
+      - name: 🛠️ 安装编译依赖 (含 curl)
+        shell: bash
         run: |
           apt-get update
           apt-get install -y \
             build-essential libncurses5-dev zlib1g-dev gawk git gettext \
-            libssl-dev xsltproc rsync wget unzip python2 python3 file
+            libssl-dev xsltproc rsync wget unzip python2 python3 file \
+            curl ca-certificates
           
-          echo "=== 容器内环境验证 ==="
+          echo "=== 环境验证 ==="
           gcc --version | head -1
-          g++ --version | head -1
+          curl --version | head -1
 
       - name: 📦 下载 OpenWrt 19.07.2 源码
+        shell: bash
         run: |
           git clone --branch v19.07.2 --depth 1 https://git.openwrt.org/openwrt/openwrt.git source
 
       - name: 🔌 注入 N828 设备树
+        shell: bash
         run: |
           cp dts/rt3052_n828.dts source/target/linux/ramips/dts/3G300M.dts
 
       - name: ⚙️ 生成编译配置
+        shell: bash
         run: |
           cd source
           cat > .config << 'EOF'
@@ -52,15 +55,25 @@ jobs:
           CONFIG_PACKAGE_luci-proto-3g=y
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
+          # 禁用 N828 不需要的 Broadcom WiFi 固件，避免下载超时
+          # CONFIG_PACKAGE_b43-firmware is not set
           EOF
           make defconfig 2>&1 | tee ../build.log
 
-      - name: 🌐 预下载软件包
+      - name: 🌐 预下载软件包 (注入存档镜像源)
+        shell: bash
         run: |
           cd source
+          # 将已失效的上游源替换为 OpenWrt 官方存档镜像
+          sed -i 's|https://downloads.sourceforge.net|https://sourceforge.mirrorservice.org|g' scripts/download.pl
+          sed -i 's|http://ftp.de.debian.org|https://deb.debian.org|g' scripts/download.pl
+          sed -i 's|http://ftp.acc.umu.se|https://ftp.gnome.org|g' scripts/download.pl
+          sed -i 's|http://www.lwfinger.com|https://sources.openwrt.org|g' scripts/download.pl
+          
           make download -j$(nproc) V=s 2>&1 | tee -a ../build.log
 
       - name: 🔥 编译固件并验证产物
+        shell: bash
         run: |
           cd source
           set -o pipefail
@@ -82,6 +95,7 @@ jobs:
 
       - name: 🚨 提取错误日志
         if: failure()
+        shell: bash
         run: |
           [ ! -f build.log ] && exit 0
           grep -iE "(error|failed|make\[[0-9]+\]: \*\*\*)" -B 3 -A 3 build.log > error_snippet.log || tail -100 build.log > error_snippet.log
@@ -96,6 +110,7 @@ jobs:
 
       - name: 🏷️ 重命名固件
         if: success()
+        shell: bash
         run: |
           DIR=$(find source/bin/targets/ramips -maxdepth 1 -type d | grep -v "^source/bin/targets/ramips$" | head -1)
           [ -z "$DIR" ] && exit 1
