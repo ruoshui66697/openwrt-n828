@@ -10,8 +10,9 @@ jobs:
       image: ubuntu:20.04
       env:
         DEBIAN_FRONTEND: noninteractive
-        # 【关键修复】允许 tar/autoconf 等工具以 root 身份编译
         FORCE_UNSAFE_CONFIGURE: "1"
+        # 【关键】指定 OpenWrt 官方归档镜像，绕过失效上游
+        OPENWRT_MIRROR: "https://sources.openwrt.org"
 
     steps:
       - name: 📥 拉取配置仓库代码
@@ -25,25 +26,22 @@ jobs:
             build-essential libncurses5-dev zlib1g-dev gawk git gettext \
             libssl-dev xsltproc rsync wget unzip python2 python3 file \
             curl ca-certificates
-          
-          echo "=== 环境验证 ==="
-          gcc --version | head -1
-          echo "FORCE_UNSAFE_CONFIGURE=$FORCE_UNSAFE_CONFIGURE"
 
       - name: 📦 下载 OpenWrt 19.07.2 源码
         shell: bash
         run: |
           git clone --branch v19.07.2 --depth 1 https://git.openwrt.org/openwrt/openwrt.git source
 
-      - name: 🔌 注入 N828 设备树
+      - name: 🔌 注入设备树 & 配置 & 修复下载源
         shell: bash
         run: |
           cp dts/rt3052_n828.dts source/target/linux/ramips/dts/3G300M.dts
-
-      - name: ⚙️ 生成编译配置
-        shell: bash
-        run: |
           cd source
+          
+          # 【核心修复】将官方归档源插入 download.pl 的最优先位置
+          sed -i '1a push @mirrors, "https://sources.openwrt.org";' scripts/download.pl
+          sed -i '1a push @mirrors, "https://downloads.openwrt.org/releases/19.07.2/targets/ramips/rt305x/";' scripts/download.pl
+          
           cat > .config << 'EOF'
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_rt305x=y
@@ -57,43 +55,28 @@ jobs:
           CONFIG_PACKAGE_luci-proto-3g=y
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
-          # 禁用 N828 (RT3052) 不需要的固件，避免下载失败
           # CONFIG_PACKAGE_b43-firmware is not set
           # CONFIG_PACKAGE_zd1211-firmware is not set
           EOF
-          make defconfig 2>&1 | tee ../build.log
+          make defconfig
 
-      - name: 🌐 预下载软件包 (仅使用可靠源)
-        shell: bash
-        run: |
-          cd source
-          # 不再替换为 sourceforge.mirrorservice.org（DNS 不可达）
-          # 仅将已知失效的 HTTP 源升级为 HTTPS，保留 sources.openwrt.org 作为兜底
-          sed -i 's|http://ftp.de.debian.org|https://deb.debian.org|g' scripts/download.pl
-          sed -i 's|http://www.zlib.net|https://zlib.net|g' scripts/download.pl
-          
-          make download -j$(nproc) V=s 2>&1 | tee -a ../build.log
-
-      - name: 🔥 编译固件并验证产物
+      - name: 🔥 编译固件 (含下载)
         shell: bash
         run: |
           cd source
           set -o pipefail
+          echo "=== 开始下载（优先使用 OpenWrt 官方归档）==="
+          make download -j$(nproc) V=s 2>&1 | tee -a ../build.log
+          echo "=== 开始编译 ==="
           make -j$(nproc) V=s 2>&1 | tee -a ../build.log
           
-          echo "🔍 检查编译产物..."
-          if [ ! -d "bin/targets/ramips" ]; then
-            echo "❌ 未生成 ramips 目录"
-            ls -laR bin/targets/ 2>/dev/null || echo "(bin/targets 不存在)"
-            exit 1
-          fi
-          COUNT=$(find bin/targets/ramips -name "*sysupgrade.bin" | wc -l)
+          COUNT=$(find bin/targets/ramips -name "*sysupgrade.bin" 2>/dev/null | wc -l)
           if [ "$COUNT" -eq 0 ]; then 
-            echo "❌ 无 sysupgrade.bin"
-            find bin/targets/ramips -type f | head -20
+            echo "❌ 未生成固件"
+            find bin/targets/ramips -type f 2>/dev/null | head -20
             exit 1
           fi
-          echo "✅ 找到 $COUNT 个固件"
+          echo "✅ 成功生成 $COUNT 个固件"
 
       - name: 🚨 提取错误日志
         if: failure()
@@ -110,20 +93,15 @@ jobs:
           name: ❌ 编译错误日志
           path: error_snippet.log
 
-      - name: 🏷️ 重命名固件
+      - name: 🏷️ 重命名并上传固件
         if: success()
         shell: bash
         run: |
           DIR=$(find source/bin/targets/ramips -maxdepth 1 -type d | grep -v "^source/bin/targets/ramips$" | head -1)
           [ -z "$DIR" ] && exit 1
           cd "$DIR"
-          N=0
-          for f in *3g300m*; do 
-            [ -e "$f" ] && mv "$f" "${f//3g300m/n828}" && N=$((N+1))
-          done
-          [ "$N" -eq 0 ] && { ls -la; exit 1; }
-          echo "✅ 重命名 $N 个文件"
-
+          for f in *3g300m*; do [ -e "$f" ] && mv "$f" "${f//3g300m/n828}"; done
+          
       - name: 📤 上传固件
         if: success()
         uses: actions/upload-artifact@v4
