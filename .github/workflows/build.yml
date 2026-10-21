@@ -61,28 +61,37 @@ jobs:
           make download -j$(nproc) V=s
           echo "✅ 软件包下载完成"
 
-      # 【核心改动】将编译输出重定向到文件，以便后续提取
+      # 【关键修复】确保 FORCE=1 作为 Make 变量正确传递
       - name: 🔥 第七步：强制跳过过时检查并开始编译固件
         id: compile
         run: |
           echo "👉 使用 FORCE=1 跳过旧版检测，正式开始编译..."
           echo "⚠️ 编译日志已保存至 build.log，失败时将自动提取错误片段"
           cd source
-          make -j$(nproc) V=s FORCE=1 2>&1 | tee ../build.log
+          # 注意：FORCE=1 必须紧跟在 make 后面，且不能被管道吞掉
+          make FORCE=1 -j$(nproc) V=s 2>&1 | tee ../build.log
           echo "✅ 固件编译完成"
 
-      # 【新增步骤】仅在编译失败时触发，精准提取报错上下文
+      # 【优化】无论哪一步失败都尝试提取日志
       - name: 🚨 第八步(仅失败时触发)：提取并上传关键错误日志
-        if: failure() && steps.compile.outcome == 'failure'
+        if: failure()
         run: |
-          echo "❌ 编译失败！正在从 build.log 中提取关键错误信息..."
-          # 提取包含 ERROR/error/failed/make[*]: *** 的行及其前后5行上下文
-          grep -iE "(error|failed|make\[[0-9]+\]: \*\*\*)" -B 5 -A 5 ../build.log > error_snippet.log || true
+          echo "❌ 构建失败！正在提取关键错误信息..."
+          LOG_FILE="../build.log"
           
-          # 如果上面没抓到，再尝试抓取最后100行（通常是致命错误所在）
+          # 如果 build.log 不存在（说明在编译前就失败了），尝试找其他日志
+          if [ ! -f "$LOG_FILE" ]; then
+            echo "⚠️ build.log 未找到，可能在前置步骤失败"
+            exit 0
+          fi
+          
+          # 提取错误上下文
+          grep -iE "(error|failed|make\[[0-9]+\]: \*\*\*|Build dependency)" -B 5 -A 5 "$LOG_FILE" > error_snippet.log || true
+          
+          # 兜底：最后100行
           if [ ! -s error_snippet.log ]; then
             echo "⚠️ 未匹配到明确错误关键字，截取最后100行日志..."
-            tail -n 100 ../build.log > error_snippet.log
+            tail -n 100 "$LOG_FILE" > error_snippet.log
           fi
           
           echo "===== 错误摘要预览 ====="
@@ -90,7 +99,7 @@ jobs:
           echo "========================"
 
       - name: 📤 第九步(仅失败时触发)：上传错误日志片段
-        if: failure() && steps.compile.outcome == 'failure'
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: ❌ 编译错误日志片段
