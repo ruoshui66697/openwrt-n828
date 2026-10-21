@@ -7,26 +7,21 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    # 【核心修复】降级到 Ubuntu 20.04，原生兼容 OpenWrt 19.07
+    runs-on: ubuntu-20.04
     
     steps:
       - name: 📥 拉取配置仓库代码
         uses: actions/checkout@v4
 
-      - name: 🛠️ 安装 GCC10 并强制设为默认
+      - name: 🛠️ 安装基础编译依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-10 g++-10 python2
+          sudo apt-get install -y \
+            build-essential libncurses5-dev zlib1g-dev gawk git gettext \
+            libssl-dev xsltproc rsync wget unzip python2 python3
           
-          # 暴力替换系统默认编译器
-          sudo rm -f /usr/bin/gcc /usr/bin/g++ /usr/bin/gcc-ar /usr/bin/gcc-nm /usr/bin/gcc-ranlib
-          sudo ln -s /usr/bin/gcc-10 /usr/bin/gcc
-          sudo ln -s /usr/bin/g++-10 /usr/bin/g++
-          sudo ln -s /usr/bin/gcc-ar-10 /usr/bin/gcc-ar
-          sudo ln -s /usr/bin/gcc-nm-10 /usr/bin/gcc-nm
-          sudo ln -s /usr/bin/gcc-ranlib-10 /usr/bin/gcc-ranlib
-          
-          echo "=== GCC 验证 ==="
+          echo "=== 环境验证 ==="
           gcc --version | head -1
           g++ --version | head -1
 
@@ -55,20 +50,19 @@ jobs:
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
           EOF
-          # 【核心修复】直接使用 FORCE=1 跳过有 Bug 的前置检查
-          make defconfig FORCE=1 2>&1 | tee ../build.log
+          # 无需 FORCE=1，无需补丁，原生通过检查
+          make defconfig 2>&1 | tee ../build.log
 
       - name: 🌐 预下载软件包
         run: |
           cd source
-          make download -j$(nproc) V=s FORCE=1 2>&1 | tee -a ../build.log
+          make download -j$(nproc) V=s 2>&1 | tee -a ../build.log
 
       - name: 🔥 编译固件并验证产物
         run: |
           cd source
           set -o pipefail
-          # 编译全程保持 FORCE=1
-          make -j$(nproc) V=s FORCE=1 2>&1 | tee -a ../build.log
+          make -j$(nproc) V=s 2>&1 | tee -a ../build.log
           
           echo "🔍 检查编译产物..."
           if [ ! -d "bin/targets/ramips" ]; then
