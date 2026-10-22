@@ -21,7 +21,8 @@
 
 		reset {
 			label = "reset";
-			gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+			/* 修正：实测 Reset 按键连接的是 GPIO 0 (Pin 17) */
+			gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_RESTART>;
 		};
 	};
@@ -29,13 +30,21 @@
 	gpio-leds {
 		compatible = "gpio-leds";
 
+		/* 警告：原 DTS 中 System LED 使用的 GPIO 13 属于 uartf 组 (UART RX)。
+		   为避免与串口控制台冲突，此处暂时注释掉。
+		   待确认硬件上 System LED 的实际 GPIO 后再启用。 */
+		/*
 		led_system: system {
 			label = "n828:green:system";
 			gpios = <&gpio0 13 GPIO_ACTIVE_LOW>;
 		};
+		*/
 
-		signal_1 {
+		/* 为了满足 aliases 的引用，这里提供一个 dummy (虚拟) 节点，
+		   或者你可以把 aliases 里的 led-system 指向一个确定的 LED (如 signal_1) */
+		led_system: signal_1 {
 			label = "n828:green:signal1";
+			/* 信号1使用 GPIO 17，属于 jtag 组，Pinmux 已正确配置 */
 			gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
 		};
 
@@ -44,8 +53,7 @@
 			gpios = <&gpio0 18 GPIO_ACTIVE_LOW>;
 		};
 
-		/* 注意：实测数据中的信号灯3 (GPIO 21) 超出 RT3052F 标准 GPIO 范围，
-		   为确保首次编译和启动安全，此处暂不添加。待进入系统后通过 sysfs 实测确认。 */
+		/* 信号灯3 (GPIO 21) 待 sysfs 实测后补充 */
 	};
 };
 
@@ -83,7 +91,6 @@
 			partition@50000 {
 				compatible = "denx,uimage";
 				label = "firmware";
-				/* 4MB Flash (0x400000) - 0x50000 (前面分区总和) = 0x3b0000 */
 				reg = <0x50000 0x3b0000>;
 			};
 		};
@@ -92,22 +99,22 @@
 
 &state_default {
 	gpio {
-		groups = "i2c", "jtag", "uartf";
+		/* 修正：移除了 "uartf"。
+		   uartf 组包含 GPIO 7~14，强制复用为 gpio 会与 UART 驱动冲突，
+		   导致 Pinmux 报错 -22 甚至串口控制台失效。
+		   保留 i2c (GPIO 1,2) 和 jtag (GPIO 17~21) 复用为 gpio。 */
+		groups = "i2c", "jtag";
 		function = "gpio";
 	};
 };
 
 &ethernet {
 	status = "okay";
-	/* 修正：RT305x 有线网卡的 MAC 地址通常存储在 EEPROM 的 0x28 偏移处 */
 	mtd-mac-address = <&factory 0x28>;
 };
 
 &esw {
 	status = "okay";
-	/* 0x2f 代表启用所有 5 个端口 (1 WAN + 4 LAN)。
-	   虽然物理上可能只有 2 个网口 (PHY0/PHY1)，但底层交换机映射保持全开最安全，
-	   具体的 WAN/LAN 划分将在后续的网络配置文件 (/etc/config/network) 中进行。 */
 	mediatek,portmap = <0x2f>;
 };
 
