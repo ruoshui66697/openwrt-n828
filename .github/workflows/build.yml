@@ -29,11 +29,21 @@ jobs:
         shell: bash
         run: |
           git clone --branch v19.07.2 --depth 1 https://git.openwrt.org/openwrt/openwrt.git source
-      - name: 🔌 注入设备树 & 配置 & 修复下载源
+      - name: 🔌 注入设备树 & 配置 & 打补丁 & 修复下载源
         shell: bash
         run: |
           cp dts/rt3052_n828.dts source/target/linux/ramips/dts/3G300M.dts
           cd source
+          
+          # ========== 新增：下载并校验 rt2x00 memmove 性能优化补丁 ==========
+          echo "=== 下载 606-rt2x00_no_realign.patch ==="
+          wget -q -O package/kernel/mac80211/patches/606-rt2x00_no_realign.patch \
+            "https://git.cdn.openwrt.org/openwrt/staging/linusw/plain/package/kernel/mac80211/patches/606-rt2x00_no_realign.patch?id=4ebf19b48fafc8d94e14e4ba779969613b241a6a"
+          # 校验补丁文件是否为有效的 diff 格式
+          head -5 package/kernel/mac80211/patches/606-rt2x00_no_realign.patch | grep -q "diff --git" || { echo "❌ 补丁下载异常，请检查链接"; exit 1; }
+          echo "✅ 补丁下载并校验成功"
+          # ==================================================================
+
           # 修改默认 LAN IP 为 192.168.10.1
           sed -i 's/192\.168\.1\.1/192.168.10.1/g' package/base-files/files/bin/config_generate
           # 【关键】LuCI 和无线包都在 feeds 中，必须先更新并安装
@@ -42,6 +52,7 @@ jobs:
           # 修复下载源
           sed -i '1a push @mirrors, "https://sources.openwrt.org";' scripts/download.pl
           sed -i '1a push @mirrors, "https://downloads.openwrt.org/releases/19.07.2/targets/ramips/rt305x/";' scripts/download.pl
+          
           cat > .config << 'EOF'
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_rt305x=y
