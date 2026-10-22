@@ -31,25 +31,110 @@ jobs:
         run: |
           git clone --branch v19.07.2 --depth 1 https://git.openwrt.org/openwrt/openwrt.git source
 
-      - name: 🔌 注入设备树 & 配置 & 修复下载源
+      - name: 🔌 注入设备树 & 自定义配置 (IP/IPv6)
         shell: bash
         run: |
+          # 1. 注入设备树
           cp dts/rt3052_n828.dts source/target/linux/ramips/dts/3G300M.dts
           cd source
+          
+          # 2. 建立 files 目录用于覆盖系统默认配置
+          mkdir -p files/etc/sysctl.d
+          mkdir -p files/etc/config
+          
+          # 3. 修改默认 IP 地址为 192.168.10.1
+          cat > files/etc/config/network << 'EOF'
+          config interface 'loopback'
+              option ifname 'lo'
+              option proto 'static'
+              option ipaddr '127.0.0.1'
+              option netmask '255.0.0.0'
 
-          # 【关键】LuCI 和无线包都在 feeds 中，必须先更新并安装
+          config globals 'globals'
+              option ula_prefix 'fd8d:eec2:8e49::/48'
+
+          config interface 'lan'
+              option type 'bridge'
+              option ifname 'eth0.1'
+              option proto 'static'
+              option ipaddr '192.168.10.1'
+              option netmask '255.255.255.0'
+              option ip6assign '60'
+
+          config interface 'wan'
+              option ifname 'eth0.2'
+              option proto 'dhcp'
+
+          config interface 'wan6'
+              option ifname 'eth0.2'
+              option proto 'dhcpv6'
+
+          config switch
+              option name 'switch0'
+              option reset '1'
+              option enable_vlan '1'
+
+          config switch_vlan
+              option device 'switch0'
+              option vlan '1'
+              option ports '0 1 2 3 6t'
+
+          config switch_vlan
+              option device 'switch0'
+              option vlan '2'
+              option ports '4 6t'
+          EOF
+
+          # 4. 运行时强制关闭 IPv6 协议栈
+          cat > files/etc/sysctl.d/99-disable-ipv6.conf << 'EOF'
+          net.ipv6.conf.all.disable_ipv6=1
+          net.ipv6.conf.default.disable_ipv6=1
+          net.ipv6.conf.lo.disable_ipv6=1
+          EOF
+          
+          # 5. 禁用 DHCPv6 和 RA (路由通告)，不影响 IPv4
+          cat > files/etc/config/dhcp << 'EOF'
+          config dnsmasq
+              option domainneeded '1'
+              option boguspriv '1'
+              option localise_queries '1'
+              option rebind_protection '1'
+              option local '/lan/'
+              option domain 'lan'
+              option expandhosts '1'
+              option authoritative '1'
+              option readethers '1'
+              option leasefile '/tmp/dhcp.leases'
+              option resolvfile '/tmp/resolv.conf.auto'
+              option localservice '1'
+
+          config dhcp 'lan'
+              option interface 'lan'
+              option start '100'
+              option limit '150'
+              option leasetime '12h'
+              option dhcpv4 'server'
+              option dhcpv6 'disabled'
+              option ra 'disabled'
+              option ndp 'disabled'
+
+          config dhcp 'wan'
+              option interface 'wan'
+              option ignore '1'
+          EOF
+
+          # 6. 更新 feeds 并修复下载源
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-          # 修复下载源
           sed -i '1a push @mirrors, "https://sources.openwrt.org";' scripts/download.pl
           sed -i '1a push @mirrors, "https://downloads.openwrt.org/releases/19.07.2/targets/ramips/rt305x/";' scripts/download.pl
-
+          
+          # 7. 生成编译配置文件
           cat > .config << 'EOF'
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_rt305x=y
           CONFIG_TARGET_ramips_rt305x_DEVICE_3g300m=y
-
+          
           # ========== 无线支持 (扫描/加入网络) ==========
           CONFIG_PACKAGE_iwinfo=y
           CONFIG_PACKAGE_libiwinfo-lua=y
@@ -57,27 +142,38 @@ jobs:
           CONFIG_PACKAGE_wpad-basic=y
           CONFIG_PACKAGE_kmod-mac80211=y
           CONFIG_PACKAGE_kmod-cfg80211=y
-
-          # ========== LuCI (含无线管理) ==========
-          CONFIG_PACKAGE_luci=y
+          
+          # ========== LuCI (使用具体组件，绝不选 luci 元包) ==========
           CONFIG_PACKAGE_luci-base=y
           CONFIG_PACKAGE_luci-mod-admin-full=y
           CONFIG_PACKAGE_luci-mod-network=y
           CONFIG_PACKAGE_luci-theme-bootstrap=y
           CONFIG_PACKAGE_luci-app-firewall=y
-
+          
           # ========== USB (保留) ==========
           CONFIG_PACKAGE_kmod-usb-ohci=y
           CONFIG_PACKAGE_kmod-usb2=y
           CONFIG_PACKAGE_kmod-usb-serial=y
           CONFIG_PACKAGE_kmod-usb-serial-option=y
-
-          # ========== 已移除 3G/PPP 相关包 ==========
+          
+          # ========== 彻底移除 PPP / 3G 及其绑定 ==========
           # CONFIG_PACKAGE_comgt is not set
           # CONFIG_PACKAGE_luci-proto-3g is not set
           # CONFIG_PACKAGE_luci-proto-ppp is not set
-
-          # ========== 其他 ==========
+          # CONFIG_PACKAGE_ppp is not set
+          # CONFIG_PACKAGE_ppp-mod-pppoe is not set
+          # CONFIG_PACKAGE_kmod-ppp is not set
+          # CONFIG_PACKAGE_kmod-pppoe is not set
+          # CONFIG_PACKAGE_kmod-pppox is not set
+          
+          # ========== 移除 IPv6 相关的用户态分配组件 ==========
+          # CONFIG_PACKAGE_odhcpd is not set
+          # CONFIG_PACKAGE_odhcpd-ipv6only is not set
+          # CONFIG_PACKAGE_odhcp6c is not set
+          # CONFIG_PACKAGE_ip6tables is not set
+          # CONFIG_PACKAGE_luci-proto-ipv6 is not set
+          
+          # ========== 内存优化 ==========
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
           # CONFIG_PACKAGE_b43-firmware is not set
@@ -94,9 +190,9 @@ jobs:
           make download -j$(nproc) V=s 2>&1 | tee -a ../build.log
           echo "=== 开始编译 ==="
           make -j$(nproc) V=s 2>&1 | tee -a ../build.log
-
+          
           COUNT=$(find bin/targets/ramips -name "*sysupgrade.bin" 2>/dev/null | wc -l)
-          if [ "$COUNT" -eq 0 ]; then
+          if [ "$COUNT" -eq 0 ]; then 
             echo "❌ 未生成固件"
             find bin/targets/ramips -type f 2>/dev/null | head -20
             exit 1
@@ -126,7 +222,7 @@ jobs:
           [ -z "$DIR" ] && exit 1
           cd "$DIR"
           for f in *3g300m*; do [ -e "$f" ] && mv "$f" "${f//3g300m/n828}"; done
-
+          
       - name: 📤 上传固件
         if: success()
         uses: actions/upload-artifact@v4
