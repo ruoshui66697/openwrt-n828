@@ -55,6 +55,7 @@ jobs:
           # ========== Web 服务：必须显式选 uhttpd ==========
           CONFIG_PACKAGE_uhttpd=y
           CONFIG_PACKAGE_uhttpd-mod-ubus=y
+          CONFIG_PACKAGE_firewall=y
           
           # ========== LuCI (使用具体组件，绝不选 luci 元包) ==========
           CONFIG_PACKAGE_luci-base=y
@@ -63,28 +64,26 @@ jobs:
           CONFIG_PACKAGE_luci-app-firewall=y
           CONFIG_PACKAGE_luci-compat=y
 
-          # ========== USB：全部移除 ==========
-          CONFIG_PACKAGE_kmod-usb-core is not set
-          CONFIG_PACKAGE_kmod-usb-ohci is not set
-          CONFIG_PACKAGE_kmod-usb2 is not set
-          CONFIG_PACKAGE_kmod-usb-serial is not set
-          CONFIG_PACKAGE_kmod-usb-serial-option is not set
-          CONFIG_PACKAGE_kmod-usb-storage is not set
-          CONFIG_PACKAGE_usb-modeswitch is not set
+          # ========== USB：保留核心/控制器，仅移除应用层功能 ==========
+          CONFIG_PACKAGE_kmod-usb-core=y
+          # CONFIG_PACKAGE_kmod-usb-serial is not set
+          # CONFIG_PACKAGE_kmod-usb-serial-option is not set
+          # CONFIG_PACKAGE_kmod-usb-storage is not set
+          # CONFIG_PACKAGE_usb-modeswitch is not set
           
           # ========== 彻底移除 PPP / 3G 及其绑定 ==========
-          CONFIG_PACKAGE_comgt is not set
-          CONFIG_PACKAGE_luci-proto-3g is not set
-          CONFIG_PACKAGE_luci-proto-ppp is not set
-          CONFIG_PACKAGE_ppp is not set
-          CONFIG_PACKAGE_ppp-mod-pppoe is not set
-          CONFIG_PACKAGE_ppp-mod-pppol2tp is not set
-          CONFIG_PACKAGE_ppp-mod-pptp is not set
-          CONFIG_PACKAGE_kmod-ppp is not set
-          CONFIG_PACKAGE_kmod-pppoe is not set
-          CONFIG_PACKAGE_kmod-pppox is not set
-          CONFIG_PACKAGE_kmod-pppol2tp is not set
-          CONFIG_PACKAGE_kmod-pptp is not set
+          # CONFIG_PACKAGE_comgt is not set
+          # CONFIG_PACKAGE_luci-proto-3g is not set
+          # CONFIG_PACKAGE_luci-proto-ppp is not set
+          # CONFIG_PACKAGE_ppp is not set
+          # CONFIG_PACKAGE_ppp-mod-pppoe is not set
+          # CONFIG_PACKAGE_ppp-mod-pppol2tp is not set
+          # CONFIG_PACKAGE_ppp-mod-pptp is not set
+          # CONFIG_PACKAGE_kmod-ppp is not set
+          # CONFIG_PACKAGE_kmod-pppoe is not set
+          # CONFIG_PACKAGE_kmod-pppox is not set
+          # CONFIG_PACKAGE_kmod-pppol2tp is not set
+          # CONFIG_PACKAGE_kmod-pptp is not set
           # ========== 其他 ==========
           CONFIG_STRIP_KERNEL_EXPORTS=y
           CONFIG_USE_MKLIBS=y
