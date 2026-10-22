@@ -3,6 +3,10 @@ name: 构建 N828 固件 (3G300M套壳版)
 on:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -37,12 +41,13 @@ jobs:
           
           # ========== 新增：下载并校验 rt2x00 memmove 性能优化补丁 ==========
           echo "=== 下载 606-rt2x00_no_realign.patch ==="
+          # 从 v19.07.2 分支的 raw 链接直接下载纯净 diff 文件
           wget -q -O package/kernel/mac80211/patches/606-rt2x00_no_realign.patch \
-            "https://git.openwrt.org/openwrt/staging/adrian/patch/?id=2683b5b15de6b1fce7e1e6d84694c7cc441f0e49"
+            "https://raw.githubusercontent.com/openwrt/openwrt/v19.07.2/package/kernel/mac80211/patches/606-rt2x00_no_realign.patch"
           
-          # 校验补丁文件是否完整（该补丁文件总长 67 行[reference:2]，且必含 diff 标志）
-          if ! head -5 package/kernel/mac80211/patches/606-rt2x00_no_realign.patch | grep -q "diff --git"; then
-            echo "❌ 补丁下载异常，请检查网络或链接"
+          # 校验补丁文件内容是否包含合法的 diff 标识
+          if ! grep -q "diff --git" package/kernel/mac80211/patches/606-rt2x00_no_realign.patch 2>/dev/null; then
+            echo "❌ 补丁下载异常或格式错误"
             head -10 package/kernel/mac80211/patches/606-rt2x00_no_realign.patch
             exit 1
           fi
