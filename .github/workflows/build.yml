@@ -41,14 +41,13 @@ jobs:
           
           # ========== 新增：下载并校验 rt2x00 memmove 性能优化补丁 ==========
           echo "=== 下载 606-rt2x00_no_realign.patch ==="
-          # 从 v19.07.2 分支的 raw 链接直接下载纯净 diff 文件
-          wget -q -O package/kernel/mac80211/patches/606-rt2x00_no_realign.patch \
-            "https://raw.githubusercontent.com/openwrt/openwrt/v19.07.2/package/kernel/mac80211/patches/606-rt2x00_no_realign.patch"
+          # 使用 curl 下载 commit 的原始 patch，并用 sed 剥离无用邮件头，只保留纯 diff 内容
+          curl -sL "https://github.com/openwrt/openwrt/commit/2683b5b15de6b1fce7e1e6d84694c7cc441f0e49.patch" | sed -n '/^diff --git/,$p' > package/kernel/mac80211/patches/606-rt2x00_no_realign.patch
           
           # 校验补丁文件内容是否包含合法的 diff 标识
           if ! grep -q "diff --git" package/kernel/mac80211/patches/606-rt2x00_no_realign.patch 2>/dev/null; then
             echo "❌ 补丁下载异常或格式错误"
-            head -10 package/kernel/mac80211/patches/606-rt2x00_no_realign.patch
+            cat package/kernel/mac80211/patches/606-rt2x00_no_realign.patch
             exit 1
           fi
           echo "✅ 补丁下载并校验成功"
