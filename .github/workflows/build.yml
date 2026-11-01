@@ -118,7 +118,9 @@ jobs:
           # CONFIG_PACKAGE_b43-firmware is not set
           # CONFIG_PACKAGE_zd1211-firmware is not set
           EOF
-          
+
+           # 应用外部自定义脚本（精简 / 补丁 / 优化）
+          bash "$GITHUB_WORKSPACE/customize.sh"
           make defconfig
 
       - name: 🔥 编译固件 (含下载)
